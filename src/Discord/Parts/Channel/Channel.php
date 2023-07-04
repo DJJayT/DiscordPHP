@@ -66,7 +66,7 @@ use function React\Promise\resolve;
  * @property      bool|null           $nsfw                               Whether the channel is NSFW.
  * @property      ?string|null        $last_message_id                    The unique identifier of the last message sent in the channel (or thread for forum channels) (may not point to an existing or valid message or thread).
  * @property      int|null            $bitrate                            The bitrate of the channel. Only for voice channels.
- * @property      int|null            $user_limit                         The user limit of the channel.
+ * @property      int|null            $user_limit                         The user limit of the channel. Max 99 for voice channels and 10000 for stage channels (0 refers to no limit).
  * @property      int|null            $rate_limit_per_user                Amount of seconds a user has to wait before sending a new message (slow mode).
  * @property      Collection|User[]   $recipients                         A collection of all the recipients in the channel. Only for DM or group channels.
  * @property-read User|null           $recipient                          The first recipient of the channel. Only for DM or group channels.
@@ -74,6 +74,7 @@ use function React\Promise\resolve;
  * @property      ?string|null        $icon                               Icon hash.
  * @property      string|null         $owner_id                           The ID of the DM creator. Only for DM or group channels.
  * @property      string|null         $application_id                     ID of the group DM creator if it is a bot.
+ * @property      bool|null           $managed                            Whether the channel is managed by an application via the `gdm.join` OAuth2 scope. Only for group DM channels.
  * @property      ?string|null        $parent_id                          ID of the parent channel.
  * @property      Carbon|null         $last_pin_timestamp                 When the last message was pinned.
  * @property      ?string|null        $rtc_region                         Voice region id for the voice channel, automatic when set to null.
@@ -166,6 +167,7 @@ class Channel extends Part
         'icon',
         'owner_id',
         'application_id',
+        'managed',
         'parent_id',
         'last_pin_timestamp',
         'rtc_region',
@@ -725,7 +727,8 @@ class Channel extends Part
      *
      * @param array $options
      *
-     * @throws NoPermissionsException Missing read_message_history permission.
+     * @throws NoPermissionsException Missing `read_message_history` permission.
+     *                                Or also missing `connect` permission for text in voice.
      * @throws \RangeException
      *
      * @return ExtendedPromiseInterface<Collection<Message>>
@@ -735,6 +738,10 @@ class Channel extends Part
         if (! $this->is_private && $botperms = $this->getBotPermissions()) {
             if (! $botperms->read_message_history) {
                 return reject(new NoPermissionsException("You do not have permission to read message history in the channel {$this->id}."));
+            }
+
+            if ($this->type == self::TYPE_GUILD_VOICE && ! $botperms->connect) {
+                return reject(new NoPermissionsException("You do not have permission to connect in the channel {$this->id}."));
             }
         }
 
@@ -942,8 +949,20 @@ class Channel extends Part
      *
      * @since 10.0.0 Arguments for `$name`, `$private` and `$auto_archive_duration` are now inside `$options`
      */
-    public function startThread(array $options, ?string $reason = null): ExtendedPromiseInterface
+    public function startThread(array|string $options, string|null|bool $reason = null, int $_auto_archive_duration = 1440, ?string $_reason = null): ExtendedPromiseInterface
     {
+        // Old v7 signature
+        if (is_string($options)) {
+            $options = [
+                'name' => $options,
+                'auto_archive_duration' => $_auto_archive_duration,
+            ];
+            if (is_bool($reason)) {
+                $options['private'] = $reason;
+            }
+            $reason = $_reason;
+        }
+
         $resolver = new OptionsResolver();
         $resolver
             ->setDefined([
@@ -1299,7 +1318,16 @@ class Channel extends Part
      */
     public function isTextBased()
     {
-        return in_array($this->type, [self::TYPE_GUILD_TEXT, self::TYPE_DM, self::TYPE_GUILD_VOICE, self::TYPE_GROUP_DM, self::TYPE_PUBLIC_THREAD, self::TYPE_PRIVATE_THREAD, self::TYPE_GUILD_ANNOUNCEMENT]);
+        return in_array($this->type, [
+            self::TYPE_GUILD_TEXT,
+            self::TYPE_DM,
+            self::TYPE_GUILD_VOICE,
+            self::TYPE_GROUP_DM,
+            self::TYPE_PUBLIC_THREAD,
+            self::TYPE_PRIVATE_THREAD,
+            self::TYPE_GUILD_ANNOUNCEMENT,
+            self::TYPE_GUILD_STAGE_VOICE
+        ]);
     }
 
     /**
@@ -1343,40 +1371,81 @@ class Channel extends Part
      */
     public function getCreatableAttributes(): array
     {
-        $attr = [
-            'name' => $this->name,
+        // Required
+        $attr = ['name' => $this->name];
+
+        // Marked "Channel Type: All" in documentation
+        $attr += $this->makeOptionalAttributes([
             'type' => $this->type,
-            'bitrate' => $this->bitrate,
             'permission_overwrites' => $this->permission_overwrites,
-            'topic' => $this->topic,
-            'user_limit' => $this->user_limit,
-            'rate_limit_per_user' => $this->rate_limit_per_user,
             'position' => $this->position,
-            'parent_id' => $this->parent_id,
-            'nsfw' => $this->nsfw,
-            'rtc_region' => $this->rtc_region,
-            'video_quality_mode' => $this->video_quality_mode,
-            'default_auto_archive_duration' => $this->default_auto_archive_duration,
-        ];
+        ]);
 
-        if ($attr['type'] == self::TYPE_GUILD_TEXT) {
-            $attr['default_thread_rate_limit_per_user'] = $this->default_thread_rate_limit_per_user ?? null;
-        } elseif ($attr['type'] == self::TYPE_GUILD_FORUM) {
-            if (array_key_exists('default_reaction_emoji', $this->attributes)) {
-                $attr['default_reaction_emoji'] = $this->attributes['default_reaction_emoji'];
-            }
+        switch ($this->type) {
+            case self::TYPE_GUILD_TEXT:
+                $attr += $this->makeOptionalAttributes([
+                    'topic' => $this->topic,
+                    'rate_limit_per_user' => $this->rate_limit_per_user,
+                    'parent_id' => $this->parent_id,
+                    'nsfw' => $this->nsfw,
+                    'default_auto_archive_duration' => $this->default_auto_archive_duration,
+                    'default_thread_rate_limit_per_user' => $this->default_thread_rate_limit_per_user,
+                ]);
+                break;
 
-            $attr['available_tags'] = $this->attributes['available_tags'] ?? null;
+            case self::TYPE_GUILD_VOICE:
+                $attr += $this->makeOptionalAttributes([
+                    'bitrate' => $this->bitrate,
+                    'user_limit' => $this->user_limit,
+                    'rate_limit_per_user' => $this->rate_limit_per_user,
+                    'parent_id' => $this->parent_id,
+                    'nsfw' => $this->nsfw,
+                    'rtc_region' => $this->rtc_region,
+                    'video_quality_mode' => $this->video_quality_mode,
+                ]);
+                break;
 
-            if (array_key_exists('default_sort_order', $this->attributes)) {
-                $attr['default_sort_order'] = $this->default_sort_order;
-            }
+            case self::TYPE_GUILD_ANNOUNCEMENT:
+                $attr += $this->makeOptionalAttributes([
+                    'topic' => $this->topic,
+                    'parent_id' => $this->parent_id,
+                    'nsfw' => $this->nsfw,
+                    'default_auto_archive_duration' => $this->default_auto_archive_duration,
+                ]);
+                break;
 
-            if (array_key_exists('default_forum_layout', $this->attributes)) {
-                $attr['default_forum_layout'] = $this->default_forum_layout;
-            }
+            case self::TYPE_GUILD_STAGE_VOICE:
+                $attr += $this->makeOptionalAttributes([
+                    'bitrate' => $this->bitrate,
+                    'user_limit' => $this->user_limit,
+                    'rate_limit_per_user' => $this->rate_limit_per_user,
+                    'parent_id' => $this->parent_id,
+                    'nsfw' => $this->nsfw,
+                    'rtc_region' => $this->rtc_region,
+                    'video_quality_mode' => $this->video_quality_mode,
+                ]);
+                break;
 
-            $attr['default_thread_rate_limit_per_user'] = $this->default_thread_rate_limit_per_user ?? null;
+            case self::TYPE_GUILD_FORUM:
+                $attr += $this->makeOptionalAttributes([
+                    'topic' => $this->topic,
+                    'rate_limit_per_user' => $this->rate_limit_per_user,
+                    'parent_id' => $this->parent_id,
+                    'nsfw' => $this->nsfw,
+                    'default_auto_archive_duration' => $this->default_auto_archive_duration,
+                    'default_reaction_emoji' => $this->attributes['default_reaction_emoji'] ?? null,
+                    'available_tags' => $this->attributes['available_tags'] ?? null,
+                    'default_sort_order' => $this->default_sort_order,
+                    'default_forum_layout' => $this->default_forum_layout,
+                    'default_thread_rate_limit_per_user' => $this->default_thread_rate_limit_per_user, // Canceled documentation #5606
+                ]);
+                break;
+
+            case null:
+                // Type was not specified but we must not assume its default to GUILD_TEXT as that is determined by API
+                $this->discord->getLogger()->warning('Not specifying channel type, creating with all filled attributes');
+                $attr += $this->makeOptionalAttributes($this->getRawAttributes()); // Send the raw attributes
+                break;
         }
 
         return $attr;
@@ -1392,6 +1461,9 @@ class Channel extends Part
         $attr = [
             'name' => $this->name,
             'position' => $this->position,
+            'permission_overwrites' => array_values($this->overwrites->map(
+                fn (Overwrite $overwrite) => $overwrite->getUpdatableAttributes()
+            )->toArray()), // TODO: check if async cache works fine
         ];
 
         if ($this->type == self::TYPE_GUILD_TEXT) {
@@ -1419,7 +1491,9 @@ class Channel extends Part
             $attr['parent_id'] = $this->parent_id;
             $attr['default_auto_archive_duration'] = $this->default_auto_archive_duration;
         } elseif ($this->type == self::TYPE_GUILD_STAGE_VOICE) {
+            $attr['nsfw'] = $this->nsfw;
             $attr['rate_limit_per_user'] = $this->rate_limit_per_user;
+            $attr['user_limit'] = $this->user_limit;
             $attr['parent_id'] = $this->parent_id;
             $attr['bitrate'] = $this->bitrate;
             $attr['rtc_region'] = $this->rtc_region;

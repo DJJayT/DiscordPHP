@@ -134,7 +134,6 @@ use function React\Promise\resolve;
  * @property Carbon|null              $joined_at              A timestamp of when the current user joined the guild.
  * @property bool|null                $large                  Whether the guild is considered 'large' (over 250 members).
  * @property int|null                 $member_count           How many members are in the guild.
- * @property object[]|null            $voice_states           Array of voice states.
  * @property MemberRepository         $members                Users in the guild.
  * @property ChannelRepository        $channels               Channels in the guild.
  * @property ScheduledeventRepository $guild_scheduled_events The scheduled events in the guild.
@@ -181,6 +180,8 @@ class Guild extends Part
     public const SUPPRESS_PREMIUM_SUBSCRIPTION = (1 << 1);
     public const SUPPRESS_GUILD_REMINDER_NOTIFICATIONS = (1 << 2);
     public const SUPPRESS_JOIN_NOTIFICATION_REPLIES = (1 << 3);
+    public const SUPPRESS_ROLE_SUBSCRIPTION_PURCHASE_NOTIFICATIONS = (1 << 4);
+    public const SUPPRESS_ROLE_SUBSCRIPTION_PURCHASE_NOTIFICATION_REPLIES = (1 << 5);
 
     public const HUB_TYPE_DEFAULT = 0;
     public const HUB_TYPE_HIGH_SCHOOL = 1;
@@ -771,7 +772,7 @@ class Guild extends Part
      * @param string|null $filepath         The path to the file if specified will override image data string.
      * @param string|null $reason           Reason for Audit Log.
      *
-     * @throws NoPermissionsException Missing manage_emojis_and_stickers permission.
+     * @throws NoPermissionsException Missing manage_guild_expressions permission.
      * @throws FileNotFoundException  File does not exist.
      *
      * @return ExtendedPromiseInterface<Emoji>
@@ -798,7 +799,7 @@ class Guild extends Part
         $options = $resolver->resolve($options);
 
         $botperms = $this->getBotPermissions();
-        if ($botperms && ! $botperms->manage_emojis_and_stickers) {
+        if ($botperms && ! $botperms->manage_guild_expressions) {
             return reject(new NoPermissionsException("You do not have permission to create emojis in the guild {$this->id}."));
         }
 
@@ -841,10 +842,10 @@ class Guild extends Part
      * @param string      $options['name']        Name of the sticker.
      * @param string|null $options['description'] Description of the sticker (empty or 2-100 characters).
      * @param string      $options['tags']        Autocomplete/suggestion tags for the sticker (max 200 characters).
-     * @param string      $filepath               The sticker file to upload, must be a PNG, APNG, or Lottie JSON file, max 500 KB.
+     * @param string      $filepath               The sticker file to upload, must be a PNG, APNG, or Lottie JSON file, max 512 KB.
      * @param string|null $reason                 Reason for Audit Log.
      *
-     * @throws NoPermissionsException Missing manage_emojis_and_stickers permission.
+     * @throws NoPermissionsException Missing manage_guild_expressions permission.
      * @throws FileNotFoundException  The file does not exist.
      * @throws \LengthException       Description is not 2-100 characters long.
      * @throws \DomainException       File format is not PNG, APNG, or Lottie JSON.
@@ -870,7 +871,7 @@ class Guild extends Part
         $options = $resolver->resolve($options);
 
         $botperms = $this->getBotPermissions();
-        if ($botperms && ! $botperms->manage_emojis_and_stickers) {
+        if ($botperms && ! $botperms->manage_guild_expressions) {
             return reject(new NoPermissionsException("You do not have permission to create stickers in the guild {$this->id}."));
         }
 
@@ -891,6 +892,7 @@ class Guild extends Part
             $contentTypes = [
                 'png' => 'image/png',
                 'apng' => 'image/apng',
+                //'gif' => 'image/gif', // Currently disabled in API
                 'lottie' => 'application/json',
             ];
 
@@ -1018,7 +1020,8 @@ class Guild extends Part
      * @param array                   $options                An array of options.
      * @param string|Member|User|null $options['user_id']     filter the log for actions made by a user
      * @param int|null                $options['action_type'] the type of audit log event
-     * @param string|Entry|null       $options['before']      filter the log before a certain entry id
+     * @param string|Entry|null       $options['before']      filter the log before a certain entry id (sort by descending)
+     * @param string|Entry|null       $options['affter']      filter the log after a certain entry id (sort by ascending)
      * @param int|null                $options['limit']       how many entries are returned (default 50, minimum 1, maximum 100)
      *
      * @throws NoPermissionsException Missing view_audit_log permission.
@@ -1032,16 +1035,19 @@ class Guild extends Part
             'user_id',
             'action_type',
             'before',
+            'after',
             'limit',
         ])
         ->setAllowedTypes('user_id', ['string', 'int', Member::class, User::class])
         ->setAllowedTypes('action_type', 'int')
         ->setAllowedTypes('before', ['string', 'int', Entry::class])
+        ->setAllowedTypes('after', ['string', 'int', Entry::class])
         ->setAllowedTypes('limit', 'int')
         ->setAllowedValues('action_type', array_values((new ReflectionClass(Entry::class))->getConstants()))
         ->setAllowedValues('limit', fn ($value) => ($value >= 1 && $value <= 100))
         ->setNormalizer('user_id', normalizePartId())
-        ->setNormalizer('before', normalizePartId());
+        ->setNormalizer('before', normalizePartId())
+        ->setNormalizer('after', normalizePartId());
 
         $options = $resolver->resolve($options);
 

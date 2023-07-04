@@ -43,6 +43,7 @@ class Sticker extends Part
     public const FORMAT_TYPE_PNG = 1;
     public const FORMAT_TYPE_APNG = 2;
     public const FORMAT_TYPE_LOTTIE = 3;
+    public const FORMAT_TYPE_GIF = 4;
 
     /**
      * {@inheritDoc}
@@ -130,8 +131,13 @@ class Sticker extends Part
     {
         $format = 'png';
 
-        if ($this->attributes['format_type'] == self::FORMAT_TYPE_LOTTIE) {
-            $format = 'lottie';
+        switch ($this->attributes['format_type']) {
+            case self::FORMAT_TYPE_LOTTIE:
+                $format = 'lottie';
+                break;
+            case self::FORMAT_TYPE_GIF:
+                $format = 'gif';
+                break;
         }
 
         return "https://cdn.discordapp.com/stickers/{$this->id}.{$format}";

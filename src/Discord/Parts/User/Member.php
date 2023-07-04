@@ -41,9 +41,8 @@ use function React\Promise\reject;
  *
  * @property      User|null           $user                         The user part of the member.
  * @property-read string|null         $username                     The username of the member.
- * @property-read string|null         $discriminator                The discriminator of the member.
  * @property      ?string|null        $nick                         The nickname of the member.
- * @property-read string              $displayname                  The nickname or username with discriminator of the member.
+ * @property-read string              $displayname                  The nickname or display name with optional discriminator of the member.
  * @property      ?string|null        $avatar                       The avatar URL of the member or null if member has no guild avatar.
  * @property      ?string|null        $avatar_hash                  The avatar hash of the member or null if member has no guild avatar.
  * @property      Collection|Role[]   $roles                        A collection of Roles that the member has.
@@ -54,7 +53,7 @@ use function React\Promise\reject;
  * @property      bool|null           $pending                      Whether the user has not yet passed the guild's Membership Screening requirements.
  * @property      RolePermission|null $permissions                  Total permissions of the member in the channel, including overwrites, returned when in the interaction object.
  * @property      Carbon|null         $communication_disabled_until When the user's timeout will expire and the user will be able to communicate in the guild again, null or a time in the past if the user is not timed out.
- * @property      int                 $flags                        Guild member flags.
+ * @property      int                 $flags                        Guild member flags represented as a bit set, defaults to `0`.
  * @property      string|null         $guild_id                     The unique identifier of the guild that the member belongs to.
  * @property-read Guild|null          $guild                        The guild that the member belongs to.
  *
@@ -68,10 +67,11 @@ use function React\Promise\reject;
  */
 class Member extends Part
 {
-    public const FLAGS_DID_REJOIN = 0;
-    public const FLAGS_COMPLETED_ONBOARDING = 1;
-    public const FLAGS_BYPASSES_VERIFICATION = 2;
-    public const FLAGS_STARTED_ONBOARDING = 3;
+    public const FLAGS_DID_REJOIN = (1 << 0);
+    public const FLAGS_COMPLETED_ONBOARDING = (1 << 1);
+    public const FLAGS_BYPASSES_VERIFICATION = (1 << 2);
+    public const FLAGS_STARTED_ONBOARDING = (1 << 3);
+
     /**
      * {@inheritDoc}
      */
@@ -509,13 +509,55 @@ class Member extends Part
     }
 
     /**
-     * Returns the member nickname or username with the discriminator.
+     * Sets verification bypasses flag on a member.
      *
-     * @return string Nickname#Discriminator
+     * @param bool $bypasses_verification Whether member is exempt from guild verification requirements.
+     * @param string|null $reason         Reason for Audit Log.
+     *
+     * @throws NoPermissionsException Missing `moderate_members` permission.
+     *
+     * @return ExtendedPromiseInterface<Member>
+     */
+    public function setBypassesVerification(bool $bypasses_verification, ?string $reason = null): ExtendedPromiseInterface
+    {
+        if ($guild = $this->guild) {
+            if ($botperms = $guild->getBotPermissions()) {
+                if (! $botperms->moderate_members) {
+                    return reject(new NoPermissionsException("You do not have permission to modify member flag in the guild {$guild->id}."));
+                }
+            }
+        }
+
+        $headers = [];
+        if (isset($reason)) {
+            $headers['X-Audit-Log-Reason'] = $reason;
+        }
+
+        $flags = $this->flags;
+        if ($bypasses_verification) {
+            $flags |= self::FLAGS_BYPASSES_VERIFICATION;
+        } else {
+            $flags &= ~self::FLAGS_BYPASSES_VERIFICATION;
+        }
+
+        return $this->http->patch(Endpoint::bind(Endpoint::GUILD_MEMBER, $this->guild_id, $this->id), ['flags' => $flags ], $headers)
+            ->then(function ($response) {
+                $this->attributes['flags'] = $response->flags;
+
+                return $this;
+            });
+    }
+
+    /**
+     * Returns the member nickname or display name with optional #discriminator.
+     *
+     * @return string Either nick or global_name or username with optional #discriminator.
      */
     protected function getDisplaynameAttribute(): string
     {
-        return ($this->nick ?? $this->username).'#'.$this->discriminator;
+        $user = $this->user;
+
+        return ($this->nick ?? $user->global_name ?? $user->username) . ($user->discriminator ? '#' . $user->discriminator : '');
     }
 
     /**
@@ -567,6 +609,8 @@ class Member extends Part
 
     /**
      * Returns the discriminator attribute.
+     *
+     * @deprecated 10.0.0 Use `$member->user->discriminator`
      *
      * @return string|null The discriminator of the member.
      */
